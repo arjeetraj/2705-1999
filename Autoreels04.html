@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shorts Finder</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px system-ui, sans-serif; color: #eee; background: #111; }
+  .wrap { display: flex; min-height: 100vh; flex-wrap: wrap; }
+  #left { flex: 1 1 340px; padding: 24px; background: #1b1b1b; }
+  #right { flex: 1 1 380px; display: flex; align-items: center;
+           justify-content: center; padding: 16px; }
+  h1 { margin-top: 0; font-size: 20px; }
+  label { display: block; margin: 12px 0 4px; font-size: 14px; color: #999; }
+  input, select, button { width: 100%; padding: 12px; border: 0;
+    border-radius: 8px; font: inherit; margin-bottom: 4px; }
+  input { background: #262626; color: #eee; }
+  button { background: #ff4057; color: #fff; cursor: pointer; margin-top: 12px; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  #msg { font-size: 14px; color: #ffb84d; min-height: 1.4em; }
+  .player { width: min(100%, 420px); aspect-ratio: 9/16; background: #000;
+            border-radius: 14px; overflow: hidden; position: relative; }
+  iframe { width: 100%; height: 100%; border: 0; }
+  #list { margin-top: 16px; font-size: 14px; }
+  #list button { background: #2e2e2e; color: #eee; text-align: left;
+                 margin: 6px 0; padding: 10px; }
+  #timerbar { position: absolute; bottom: 0; left: 0; height: 4px;
+              background: #ff4057; width: 0; z-index: 2; }
+  #skip { position: absolute; top: 12px; right: 12px; width: auto;
+          background: #222c; z-index: 3; padding: 8px 12px; }
+  #countdown { position: absolute; top: 12px; left: 12px; z-index: 3;
+               background: #222c; padding: 8px 12px; border-radius: 8px;
+               font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="left">
+    <h1>Shorts Finder</h1>
+    <label for="key">YouTube API key <small>(free, from console.cloud.google.com)</small></label>
+    <input id="key" type="password" placeholder="AIza...">
+    <label for="type">Search type</label>
+    <select id="type">
+      <option value="category">Category keyword</option>
+      <option value="channel">Channel name</option>
+      <option value="url">Channel URL</option>
+    </select>
+    <label for="input">Input</label>
+    <input id="input" placeholder='e.g. "Gaming" or "MrBeast" or a channel URL'>
+    <label for="secs">Auto-advance timer (15–62 seconds)</label>
+    <input id="secs" type="number" min="15" max="62" value="15">
+    <button id="go">Find Shorts</button>
+    <p id="msg"></p>
+    <div id="list"></div>
+  </div>
+  <div id="right">
+    <div class="player" id="playerBox">
+      <div id="countdown"></div>
+      <button id="skip">Skip</button>
+      <div id="timerbar"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const $ = id => document.querySelector(id);
+  const MIN = 15, MAX = 62;
+  const CATEGORIES = {
+    Gaming: "gaming shorts", Cooking: "cooking recipes shorts",
+    Tech: "technology gadgets shorts", Comedy: "funny shorts"
+  };
+
+  let shorts = [], cursor = 0, tick = null, advance = null, seconds = 15;
+
+  function play(i) {
+    if (!shorts.length) { $("#countdown").textContent = ""; return; }
+    cursor = (i + shorts.length) % shorts.length;
+    clearInterval(tick); clearTimeout(advance);
+    $("#playerBox").innerHTML = `
+      <div id="countdown"></div>
+      <button id="skip">Skip</button>
+      <div id="timerbar"></div>
+      <iframe src="https://www.youtube.com/embed/${shorts[cursor].id}?autoplay=1&playsinline=1"
+        allow="autoplay; encrypted-media" allowfullscreen title="Shorts preview"></iframe>`;
+    bindPlayer();
+    runTimer();
+  }
+
+  function runTimer() {
+    let left = seconds;
+    const cd = $("#countdown"), bar = $("#timerbar");
+    cd.textContent = `${left}s to next`;
+    bar.style.width = "0";
+    tick = setInterval(() => {
+      left -= 1;
+      cd.textContent = `${left}s to next`;
+      bar.style.width = `${100 - (left / seconds) * 100}%`;
+    }, 1000);
+    advance = setTimeout(() => play(cursor + 1), seconds * 1000);
+  }
+
+  function bindPlayer() {
+    $("#skip").addEventListener("click", () => play(cursor + 1));
+  }
+
+  function parseChannelUrl(url) {
+    const m = url.match(/\/(channel\/(UC[\w-]+)|@[\w.-]+|c\/[\w.-]+|user\/[\w.-]+)/);
+    return m ? m[1] : null;
+  }
+
+  async function api(path, params) {
+    const q = new URLSearchParams({ key: $("#key").value.trim(), ...params });
+    const r = await fetch(`https://www.googleapis.com/youtube/v3/${path}?${q}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error?.message || "API request failed");
+    return d;
+  }
+
+  $("#go").addEventListener("click", async () => {
+    const msg = $("#msg");
+    msg.textContent = "";
+    if (!$("#key").value.trim()) { msg.textContent = "Enter your API key first."; return; }
+
+    seconds = parseInt($("#secs").value, 10);
+    if (!(seconds >= MIN && seconds <= MAX)) {
+      msg.textContent = `Timer must be between ${MIN} and ${MAX} seconds.`;
+      return;
+    }
+
+    const type = $("#type").value, input = $("#input").value.trim();
+    if (!input) { msg.textContent = "Enter a category, name, or URL."; return; }
+    $("#go").disabled = true;
+    try {
+      let channelId = null, query = null;
+      if (type === "category") {
+        query = CATEGORIES[input] || input;
+      } else if (type === "url") {
+        const path = parseChannelUrl(input);
+        if (!path) throw new Error("Not a recognised channel URL.");
+        if (path.startsWith("channel/")) channelId = path.split("/")[1];
+        else {
+          const found = await api("channels", { part: "id", forHandle: path, maxResults: 1 }).catch(() => null);
+          channelId = found?.items?.[0]?.id ||
+            (await api("search", { part: "snippet", q: path, type: "channel", maxResults: 1 })).items?.[0]?.id?.channelId;
+        }
+        if (!channelId) throw new Error("Channel not found.");
+      } else {
+        const found = await api("search", { part: "snippet", q: input, type: "channel", maxResults: 1 });
+        channelId = found.items?.[0]?.id?.channelId;
+        if (!channelId) throw new Error("Channel not found.");
+      }
+
+      const res = channelId
+        ? await api("search", { part: "id", channelId, type: "video", order: "viewCount", maxResults: 20 })
+        : await api("search", { part: "id", q: query, type: "video", maxResults: 25 });
+
+      const ids = res.items?.map(i => i.id?.videoId).filter(Boolean) || [];
+      if (!ids.length) { msg.textContent = "No videos found. Try another input."; return; }
+
+      const details = await api("videos", { part: "contentDetails,snippet", id: ids.join(",") });
+      shorts = details.items.filter(v => {
+        const m = v.contentDetails.duration.match(/PT(?:(\d+)M)?(?:(\d+)S)?/);
+        const secs = (+(m?.[1] || 0)) * 60 + (+(m?.[2] || 0));
+        return secs > 0 && secs <= 60;
+      }).map(v => ({ id: v.id, title: v.snippet.title }));
+
+      if (!shorts.length) { msg.textContent = "No Shorts (≤60s) found for that input."; return; }
+      msg.textContent = `${shorts.length} Shorts found — auto-advancing every ${seconds}s.`;
+      const list = $("#list"); list.innerHTML = "";
+      shorts.forEach((s, i) => {
+        const b = document.createElement("button");
+        b.textContent = s.title.slice(0, 60);
+        b.addEventListener("click", () => play(i));
+        list.appendChild(b);
+      });
+      play(0);
+    } catch (e) {
+      msg.textContent = `Error: ${e.message}`;
+    } finally {
+      $("#go").disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
